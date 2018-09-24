@@ -1,0 +1,308 @@
+---
+title: "Gov_officials"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+require(dplyr)
+library(data.table)
+library(dummies)
+require(anytime)
+require(lubridate)
+require(mclust)
+require(arm)
+library(e1071)
+library(caret)
+
+```
+
+## R Markdown
+read data
+```{r cars}
+background1 <- read.csv("background1.csv", header=T, na.strings=c("","NA"))
+background2 <- read.csv("background2.csv",header=T, na.strings=c("","NA"))
+backgroundNo2 <- read.csv("no_background2.csv")
+area_code <- read.csv("area_code.csv")
+School_code <- read.csv("SchoolCode.csv")
+job_title <- read.csv("job_Title_code.csv")
+```
+
+
+clean data and convert var to binary
+党派信息 ?= time to join the Party?
+```{r}
+background1$X <- NULL
+names(background1)[4] <- '生日'
+
+
+#recode
+table(background1$最高学历) 
+background1$最高学历<- recode(background1$最高学历, 不详 = "No_inf", 专科 = "diploma", 中专 = "highS_diploma",初中 = "secondary", 博士 = "phd",博士后 = "posdoc",本科 = "undergrad",硕士 = "master",高中 = "secondary2")
+#convert NA to 0
+background1$最高学历[is.na(background1$最高学历)] <- "No_inf"
+
+table(background1$现状) 
+background1$现状<- recode(background1$现状, 不详= "No_inf",在职 = "in_service", 死亡 = "dead",立案查处 = "investigation", 退休 = "retired" )
+background1$现状 <- as.character(background1$现状)
+#partical match this one due to special symbol '/' in the string
+background1[grepl("降", background1$现状), "现状"] <- "dispose"
+
+table(background1$军队) # 1= Yes 
+background1$军队[is.na(background1$军队)] <- 'no_inf'
+background1$军队<- recode(background1$军队,  "0" = "No", "1" = "Yes")
+
+table(background1$开除党籍) #not sure what happened to NA, I'll convert them to 0
+background1$开除党籍 <- as.character(background1$开除党籍)
+background1$开除党籍[is.na(background1$开除党籍)] <- 'no_info'
+background1$开除党籍<- recode(background1$开除党籍, 否= "No",是 = "Yes")
+
+table(background1$查处.罢黜原因)
+background1$查处.罢黜原因<- recode(background1$查处.罢黜原因, 其他= "other", 生活作风问题 = "scandal", 责任事故 = "negligence",贪污腐败 = "curruption", 违纪 = "breaking_rules" )
+
+table(background1$是否复出)
+background1$是否复出<- recode(background1$是否复出, 否= "No", 是 = "Yes")
+
+table(background1$是否起诉)
+background1$是否起诉<- recode(background1$是否起诉, 否= "No", 是 = "Yes")
+
+table(background1$性别)
+background1$性别<- recode(background1$性别, 女= "Female", 男 = "Male")
+
+table(background2$是否全国性组织)
+background2$是否全国性组织<- recode(background2$是否全国性组织, 否= "No", 是 = "Yes")
+
+table(background2$是否中央派出)
+background2$是否中央派出<- recode(background2$是否中央派出, 否= "No", 是 = "Yes")
+
+
+```
+
+#background1
+let's cluster the cases and see if there's any pattern
+```{r}
+#convert factors to dummy
+clean_data<-dummy.data.frame(background1,names=c('最高学历'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('现状'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('开除党籍'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('查处.罢黜原因'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('开除党籍'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('是否复出'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('是否全国性组织'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('是否中央派出'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('是否起诉'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('性别'),sep='_')
+clean_data<-dummy.data.frame(clean_data,names=c('军队'),sep='_')
+
+#add age
+clean_data$today <- as.Date("2018-09-23")
+clean_data$age <- anytime(clean_data$today) - anytime(clean_data$生日)
+clean_data$age <- round(as.numeric(clean_data$age/360), digits= 0)
+
+#add how many years they have joined the party
+clean_data$join_p <- anytime(clean_data$today) - anytime(clean_data$党派信息)
+clean_data$join_p <- round(as.numeric(clean_data$join_p/360), digits= 0)
+
+#age when they join the party
+clean_data$join_age <- anytime(clean_data$党派信息) - anytime(clean_data$生日) 
+clean_data$join_age <- round(as.numeric(clean_data$join_age/3600/24/360), digits= 0)
+```
+
+#background2
+calculate start - end (How long have they been in the a gov official in the party?)
+```{r}
+options(digits.secs=6)
+Sys.setenv(TZ=anytime:::getTZ()) 
+background2$time_diff <- anytime(background2$终止时间..YYYY.MM.DD..) - anytime(background2$起始时间.YYYY.MM.DD.)
+background2$time_diff <- round(background2$time_diff/3600/24/360, digits= 2)
+```
+
+
+
+
+#add how many times they work in central？ also get the most freq province of each person 
+基本大类别
+```{r}
+table(background2$基本大类别)
+background2$基本大类别<- recode(background2$基本大类别, 中央企业= "0", 人大 = "1", 党委 = "2",共青团 = "3",  其他 = "4", 军队 = "5", 地方企业 = "6", 基层组织 = "7", 学校 = "8",政协 = "9",政府_国务院 = "10",民主党派 = "11",法院_检察院 = "12",行业协会_人民团体 = "13" )
+clean_data2<-dummy.data.frame(background2,names=c('基本大类别'),sep='_')
+```
+
+地方一级关键词
+```{r}
+table(clean_data2$地方一级关键词)
+clean_data2$地方一级关键词<- recode(clean_data2$地方一级关键词, 上海市= "0", 不详 = "1", 中央 = "2",乍得 = "3",  云南省 = "4", 伊朗 = "3", 几内亚 = "3",加纳 = "3", 肯尼亚 = "3", 南斯拉夫 = "3",卢旺达 = "3",坦桑尼亚 = "3",埃及 = "3", 巴基斯坦 = "3",朝鲜 = "3",津巴布韦 = "3", 莱索托 = "3",乍得 = "3",俄罗斯联邦 = "5", 苏联 = "5",内蒙古自治区 = "6",加拿大 = "7", 奥地利 = "7",意大利 = "7",挪威 = "7",  日本 = "7",比利时 = "7",法国 = "7",波兰 = "7",澳大利亚 = "7",爱尔兰 = "7",新加坡 = "7",捷克斯洛伐克 = "7",瑞典 = "7",美国 = "7",英国 = "7",荷兰 = "7",北京市 = "8",吉林省 = "9",四川省 = "10",天津市 = "11", 宁夏回族自治区 = "12",安徽省 = "13", 山东省 = "14",山西省 = "15",广东省 = "16",广西壮族自治区 = "17",新疆维吾尔自治区 = "18",晋冀鲁豫边区 = "19",江苏省 = "20", 江西省 = "21",河北省 = "22",河南省 = "23",浙江省 = "24",海南省 = "25",湖北省 = "26",湖南省 = "27",澳门特别行政区 = "28",  香港特别行政区 = "28",甘肃省 = "29",福建省 = "30",西藏自治区 = "31", 贵州省 = "32",辽宁省 = "33",重庆市 = "34",陕西省 = "35",青海省 = "36", 黑龙江省 = "36", 晋察冀边区 = "37", 黑龙江省 = "38")
+clean_data2[grepl("德国", clean_data2$地方一级关键词), "地方一级关键词"] <- "7"
+clean_data2[grepl("苏南", clean_data2$地方一级关键词), "地方一级关键词"] <- "5"
+
+
+clean_data2$地方一级关键词 <- factor(clean_data2$地方一级关键词)
+table(clean_data2 $地方一级关键词)
+
+#convert to dummy
+clean_data2<-dummy.data.frame(clean_data2,names=c('地方一级关键词'),sep='_')
+```
+
+
+
+```{r}
+table(clean_data2$级别)
+#convert to dummy
+clean_data2$级别<- recode(clean_data2$级别, 副厅= "deputy_director", 副国 = "deputy_leader", 副处 = "deputy_dept",副部 = "vice_minister",  小于副处 = "less_dept", 无级别 = "no_rank", 正厅 = "director",正国 = "national_leader", 正处 = "dept", 正部 = "minister")
+clean_data2<-dummy.data.frame(clean_data2,names=c('级别'),sep='_')
+```
+
+sum the position, place and institute for each case
+```{r}
+cols <- c(2,6:7, 9:47, 53:66, 73:82, 86)
+fea2 <- clean_data2[,cols]
+fea3 <- aggregate(. ~ 姓名, fea2, sum)
+
+```
+
+merge with background1
+```{r}
+#get background1
+cols <- c(1:3, 9:17, 19:35,37:39,43:44,55:57)
+fea4 <- clean_data[,cols]
+#merge
+fea <- merge(fea3, fea4, by = '姓名')
+
+```
+
+let's cluster the data and see the patterns
+```{r}
+#convert all the var to numbers, replace NA with mean
+fea$join_age <- ifelse(is.na(fea$join_age), mean(fea$join_age , na.rm=TRUE), fea$join_age)
+fea$join_p <- ifelse(is.na(fea$join_p), mean(fea$join_p , na.rm=TRUE), fea$join_p)
+fea$age <- ifelse(is.na(fea$age), mean(fea$age, na.rm=TRUE), fea$age)
+
+data2 <- as.data.frame(lapply(fea[ ,2:103], as.numeric))
+```
+
+select features for clustering： ranking, time joining party, age when joining party, positions
+```{r}
+# ranking, time joining party, age when joining party, positions
+cols <- c(56:65,100:102,66,1:2)
+data <- data2[,cols]
+#cluster
+#data <- data.frame(apply(data,2,rescale))
+BIC <- mclustBIC(scale(data))
+plot(BIC)
+```
+
+```{r}
+summary(BIC)
+mod1 <- Mclust(data, x = BIC)
+s <- summary(mod1, parameters = TRUE)
+s
+```
+
+select features for clustering： ranking, time joining party, age when joining party, positions
+```{r}
+#location
+cols <- c(3:41)
+data <- data2[,cols]
+
+#PCA
+prin_comp <- prcomp(data, scale. = T)
+prin_comp$rotation
+biplot(prin_comp, scale = 0)
+
+```
+
+frequency of changing positions.  does freq related to edu? ranking?
+```{r}
+#should add frequency of changing position  freq/time_diff   how often do they change a position
+freq_change_pos <- data.frame(table(background2$姓名))
+freq_all <- merge(freq_change_pos,fea, by.x = "Var1", by.y = "姓名")
+#how many years dp they get to change a postion?
+freq_all$freq_change_pos_nor <- freq_all$time_diff/freq_all$Freq
+
+#frequency of workin in central
+central <- background2 %>% 
+  group_by(姓名) %>% 
+  filter(., 地方一级关键词 == "中央")
+
+central_freq <- data.frame(table(central$姓名))
+colnames(central_freq) <- c('Var1','central_freq')
+freq_all <- merge(central_freq,freq_all, by = "Var1")
+
+```
+
+Let's do the cluster again adding the frequency of working in central and frequency of changing positions
+```{r}
+# ranking, time joining party, age when joining party, positions
+cols <- c(2:5, 59:69, 103:106 )
+data <- freq_all[,cols]
+#cluster
+#data <- data.frame(apply(data,2,rescale))
+BIC <- mclustBIC(scale(data))
+plot(BIC)
+```
+
+```{r}
+summary(BIC)
+mod1 <- Mclust(data, x = BIC)
+s <- summary(mod1, parameters = TRUE)
+#shows means of each group
+s[11]
+```
+
+Let's do a regression
+
+```{r}
+#recode ranking here we recode no_ranking = 1, ranked = 0
+recode_r <- background2[, c(2,22)]
+recode_r$级别<- recode(recode_r$级别, 副厅= 9, 副国 = 2, 副处 = 6,副部 = 4,  小于副处 = 7, 无级别 = 10, 正厅 = 8,正国 = 1, 正处 = 5, 正部 = 4)
+#clean_data2<-dummy.data.frame(clean_data2,names=c('级别'),sep='_')
+#select the highest ranking of each person
+highest_rank <- aggregate(级别 ~ 姓名, data = recode_r, min)
+#merge with features
+all <- merge(highest_rank,freq_all, by.x = '姓名', by.y = 'Var1')
+
+#regress the highest ranking 
+cols <- c(2:6, 70, 104:107 )
+reg_fea <- all[cols]
+l <- lm(formula = 级别 ~ ., data = reg_fea)
+summary(l)
+```
+
+
+
+let's try svm to predit those work in the province or above level
+remove age, because regression shows it's not predictive
+```{r}
+highest_rank$级别<- recode(highest_rank$级别,  "1" = 1, "2" = 1, "3" = 1,  "7" = 0, "10" = 0, "8" = 0, "9" = 0, "4" = 1, "5" = 0, "6" = 0)
+#select the highest ranking of each person
+table(highest_rank$级别)
+#merge with features
+all2 <- merge(highest_rank,freq_all, by.x = '姓名', by.y = 'Var1')
+
+
+#svm predict highest ranking 
+cols <- c(2:6, 70, 104:107 )
+svm_fea <- all2[cols]
+
+
+set.seed(123)
+smp_size <- floor(0.70 * nrow(svm_fea))
+train_ind <- sample(seq_len(nrow(svm_fea)), size = smp_size)
+train <- svm_fea[train_ind, ]
+test <- svm_fea[-train_ind, ]
+
+#Fit a model. The function syntax is very similar to lm function
+model_svm <- svm(as.factor(级别) ~ . , train)
+#Use the predictions on the data
+pred <- predict(model_svm, test)
+
+y <- as.factor(test$级别)
+predictions <- pred
+
+precision <- posPredValue(predictions, y, positive="1")
+recall <- sensitivity(predictions, y, positive="1")
+
+#78% accurate
+(2 * precision  * recall) / (precision + recall)
+table(y,predictions)
+```
+
