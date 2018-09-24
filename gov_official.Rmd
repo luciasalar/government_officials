@@ -1,6 +1,8 @@
 ---
 title: "Gov_officials"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -27,6 +29,10 @@ School_code <- read.csv("SchoolCode.csv")
 job_title <- read.csv("job_Title_code.csv")
 ```
 
+```{r}
+colnames(background1)
+colnames(background2)
+```
 
 clean data and convert var to binary
 党派信息 ?= time to join the Party?
@@ -69,10 +75,10 @@ table(background1$性别)
 background1$性别<- recode(background1$性别, 女= "Female", 男 = "Male")
 
 table(background2$是否全国性组织)
-background2$是否全国性组织<- recode(background2$是否全国性组织, 否= "No", 是 = "Yes")
+background2$是否全国性组织<- recode(background2$是否全国性组织, 否= 0, 是 = 1)
 
 table(background2$是否中央派出)
-background2$是否中央派出<- recode(background2$是否中央派出, 否= "No", 是 = "Yes")
+background2$是否中央派出<- recode(background2$是否中央派出, 否= 0, 是 = 1)
 
 
 ```
@@ -157,6 +163,7 @@ cols <- c(2,6:7, 9:47, 53:66, 73:82, 86)
 fea2 <- clean_data2[,cols]
 fea3 <- aggregate(. ~ 姓名, fea2, sum)
 
+
 ```
 
 merge with background1
@@ -194,21 +201,10 @@ plot(BIC)
 summary(BIC)
 mod1 <- Mclust(data, x = BIC)
 s <- summary(mod1, parameters = TRUE)
-s
-```
-
-select features for clustering： ranking, time joining party, age when joining party, positions
-```{r}
-#location
-cols <- c(3:41)
-data <- data2[,cols]
-
-#PCA
-prin_comp <- prcomp(data, scale. = T)
-prin_comp$rotation
-biplot(prin_comp, scale = 0)
 
 ```
+
+
 
 frequency of changing positions.  does freq related to edu? ranking?
 ```{r}
@@ -226,13 +222,14 @@ central <- background2 %>%
 central_freq <- data.frame(table(central$姓名))
 colnames(central_freq) <- c('Var1','central_freq')
 freq_all <- merge(central_freq,freq_all, by = "Var1")
-
+#the percentage of working in the central gov among all the positions
+freq_all$central_freq_per <- freq_all$central_freq/freq_all$Freq
 ```
 
 Let's do the cluster again adding the frequency of working in central and frequency of changing positions
 ```{r}
 # ranking, time joining party, age when joining party, positions
-cols <- c(2:5, 59:69, 103:106 )
+cols <- c(2:5, 59:69, 103:107 )
 data <- freq_all[,cols]
 #cluster
 #data <- data.frame(apply(data,2,rescale))
@@ -246,6 +243,37 @@ mod1 <- Mclust(data, x = BIC)
 s <- summary(mod1, parameters = TRUE)
 #shows means of each group
 s[11]
+#lets save the result as a vector
+data$group <- s$classification
+```
+
+now we can see the basic stats of each group and rank see which group has the highest/lowest variable means
+```{max/min mean}
+stats <- function (var1){
+
+  mean <- round(aggregate(var1, list(data$group), mean),digits = 2)
+  return (list(mean$x))
+
+}
+
+stats_result <- lapply(data[1:20], function(x) stats(x))
+
+###Here shows clusters with maximun value in each variable
+mean <- lapply(stats_result, `[`, 1)
+mean_matrix <- as.data.frame(sapply(mean, function(x){as.numeric(unlist(x[1]))}))
+max <- as.data.frame(sapply(mean_matrix, function(x) which.max(x)))
+max<- setDT(max, keep.rownames = TRUE)[]
+colnames(max) <- c("var","cluster")
+max[with(max, order(cluster)), ]
+
+```
+
+```{r}
+min<- as.data.frame(sapply(mean_matrix, function(x) which.min(x)))
+min<- setDT(min, keep.rownames = TRUE)[]
+colnames(min) <- c("var","cluster")
+min[with(min, order(cluster)), ]
+
 ```
 
 Let's do a regression
@@ -256,12 +284,13 @@ recode_r <- background2[, c(2,22)]
 recode_r$级别<- recode(recode_r$级别, 副厅= 9, 副国 = 2, 副处 = 6,副部 = 4,  小于副处 = 7, 无级别 = 10, 正厅 = 8,正国 = 1, 正处 = 5, 正部 = 4)
 #clean_data2<-dummy.data.frame(clean_data2,names=c('级别'),sep='_')
 #select the highest ranking of each person
+rm(min)
 highest_rank <- aggregate(级别 ~ 姓名, data = recode_r, min)
 #merge with features
 all <- merge(highest_rank,freq_all, by.x = '姓名', by.y = 'Var1')
 
 #regress the highest ranking 
-cols <- c(2:6, 70, 104:107 )
+cols <- c(2:6, 70, 104:108)
 reg_fea <- all[cols]
 l <- lm(formula = 级别 ~ ., data = reg_fea)
 summary(l)
